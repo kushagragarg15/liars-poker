@@ -1,6 +1,6 @@
 # Liar's Poker
 
-**Play:** https://kushagragarg.me/liars-poker/
+**Play:** https://liars-poker.vercel.app/
 
 A multiplayer poker-hand bluffing game built with React, bundled into a single self-contained HTML file.
 
@@ -29,4 +29,4 @@ Multiplayer only works when the page is opened inside Claude (it relies on `wind
 
 ## Deploy
 
-Every push to `main` builds the game and publishes `dist/` to GitHub Pages via `.github/workflows/deploy.yml`.
+Hosted on Vercel. `vercel.json` sets the build (`npm run build`) and output (`dist/`), so importing the repo needs no extra settings; every push to `main` redeploys.
