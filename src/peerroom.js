@@ -11,9 +11,33 @@ const OPEN_TIMEOUT_MS = 10000;
 
 const randId = () => ID_PREFIX + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 6);
 
-function openPeer(id) {
+// PeerJS's built-in TURN servers are gone, so players on different networks (mobile data, most
+// home routers) need relay credentials from our /api/turn function. Without them only direct
+// connections work.
+const STUN = [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun.cloudflare.com:3478' }];
+let iceServersP;
+function iceServers() {
+  if (!iceServersP) {
+    iceServersP = (async () => {
+      try {
+        const ctl = new AbortController();
+        const t = setTimeout(() => ctl.abort(), 5000);
+        const r = await fetch('/api/turn', { signal: ctl.signal, cache: 'no-store' });
+        clearTimeout(t);
+        const j = r.ok ? await r.json() : null;
+        if (j && Array.isArray(j.iceServers) && j.iceServers.length) return [...STUN, ...j.iceServers];
+      } catch (e) {}
+      console.warn('No TURN relay configured; players on different networks may not connect.');
+      return STUN;
+    })();
+  }
+  return iceServersP;
+}
+
+async function openPeer(id) {
+  const config = { iceServers: await iceServers() };
   return new Promise((resolve, reject) => {
-    const p = id ? new Peer(id, { debug: 0 }) : new Peer(randId(), { debug: 0 });
+    const p = new Peer(id || randId(), { debug: 0, config });
     const t = setTimeout(() => { p.destroy(); reject(Object.assign(new Error('timeout'), { type: 'timeout' })); }, OPEN_TIMEOUT_MS);
     p.once('open', () => { clearTimeout(t); resolve(p); });
     p.once('error', (e) => { clearTimeout(t); p.destroy(); reject(e); });
