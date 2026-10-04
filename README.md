@@ -1,5 +1,6 @@
 # Liar's Poker
-n**Play:** https://kushagragarg15.github.io/liars-poker/
+
+**Play:** https://kushagragarg.me/liars-poker/
 
 A multiplayer poker-hand bluffing game built with React, bundled into a single self-contained HTML file.
 
