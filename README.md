@@ -1,6 +1,6 @@
 # Liar's Poker
 
-**Play:** https://liars-poker-lovat.vercel.app/
+**Play:** https://liars-poker-usi.vercel.app/
 
 A multiplayer poker-hand bluffing game built with React, bundled into a single self-contained HTML file.
 
