@@ -8,7 +8,9 @@ module.exports = async (req, res) => {
     const { METERED_APP, METERED_API_KEY, CF_TURN_KEY_ID, CF_TURN_API_TOKEN } = process.env;
     let iceServers = null;
     if (METERED_APP && METERED_API_KEY) {
-      const r = await fetch(`https://${METERED_APP}.metered.live/api/v1/turn/credentials?apiKey=${encodeURIComponent(METERED_API_KEY)}`);
+      // Accept "app", "app.metered.live" or a full URL
+      const app = METERED_APP.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/\.metered\.live$/, '');
+      const r = await fetch(`https://${app}.metered.live/api/v1/turn/credentials?apiKey=${encodeURIComponent(METERED_API_KEY.trim())}`);
       if (!r.ok) throw new Error('metered ' + r.status);
       iceServers = await r.json();
     } else if (CF_TURN_KEY_ID && CF_TURN_API_TOKEN) {
@@ -24,6 +26,7 @@ module.exports = async (req, res) => {
     if (!iceServers) return res.status(404).json({ error: 'No TURN provider configured' });
     res.status(200).json({ iceServers });
   } catch (e) {
-    res.status(502).json({ error: String(e.message || e) });
+    const cause = e.cause && (e.cause.code || e.cause.message);
+    res.status(502).json({ error: String(e.message || e) + (cause ? ' (' + cause + ')' : '') });
   }
 };
