@@ -34,8 +34,8 @@ export function normalizeBid(b) {
   if ([1, 2, 4, 5, 8].includes(t)) o.rank1 = r1;
   else if (t === 3) { o.rank1 = Math.max(r1, r2); o.rank2 = Math.min(r1, r2); }
   else if (t === 7) { o.rank1 = r1; o.rank2 = r2; }
-  else if (t === 6 || t === 10) o.suit = b.suit;
-  else if (t === 9) { o.rank1 = r1; o.suit = b.suit; }
+  else if (t === 10) o.suit = b.suit;
+  else if (t === 6 || t === 9) { o.rank1 = r1; o.suit = b.suit; }
   return o;
 }
 
@@ -48,7 +48,8 @@ export function validateBid(b) {
     case 3: return rk(b.rank1) && rk(b.rank2) && b.rank1 > b.rank2;
     case 7: return rk(b.rank1) && rk(b.rank2) && b.rank1 !== b.rank2;
     case 5: return rk(b.rank1) && b.rank1 >= 5;
-    case 6: case 10: return st(b.suit);
+    case 6: return rk(b.rank1) && b.rank1 >= 6 && st(b.suit);
+    case 10: return st(b.suit);
     case 9: return rk(b.rank1) && b.rank1 >= 5 && b.rank1 <= 13 && st(b.suit);
   }
   return false;
@@ -71,7 +72,7 @@ export function bidText(b) {
     case 3: return `Two pair, ${rankMany(b.rank1)} and ${rankMany(b.rank2)}`;
     case 4: return `Three ${rankMany(b.rank1)}`;
     case 5: return `${rankOne(b.rank1)}-high straight`;
-    case 6: return `Flush in ${SUIT_NAME[b.suit]}`;
+    case 6: return `${rankOne(b.rank1)}-high flush in ${SUIT_NAME[b.suit]}`;
     case 7: return `${rankMany(b.rank1)} full of ${rankMany(b.rank2)}`;
     case 8: return `Four ${rankMany(b.rank1)}`;
     case 9: return `${rankOne(b.rank1)}-high straight flush in ${SUIT_NAME[b.suit]}`;
@@ -98,7 +99,12 @@ export function holds(pool, bid) {
     case 3: return rc[bid.rank1] >= 2 && rc[bid.rank2] >= 2;
     case 4: return rc[bid.rank1] >= 3;
     case 5: return straightRanks(bid.rank1).every((r) => rc[r] > 0);
-    case 6: return sc[bid.suit] >= 5;
+    case 6: {
+      // the named card, plus four lower cards of the same suit
+      let top = false, low = 0;
+      for (const c of pool) if (c.s === bid.suit) { if (c.r === bid.rank1) top = true; else if (c.r < bid.rank1) low++; }
+      return top && low >= 4;
+    }
     case 7: return rc[bid.rank1] >= 3 && rc[bid.rank2] >= 2;
     case 8: return rc[bid.rank1] >= 4;
     case 9: case 10: {
@@ -151,9 +157,14 @@ export function check(pool, bid) {
       break;
     }
     case 6: {
-      const n = bySuit[bid.suit].length;
-      ok = n >= 5; used = bySuit[bid.suit].slice(0, 5);
-      text = `Needed five ${SUIT_NAME[bid.suit]}, found ${n}.`;
+      const top = bySuit[bid.suit].find((c) => c.r === r1);
+      const low = bySuit[bid.suit].filter((c) => c.r < r1).sort((a, b) => b.r - a.r);
+      ok = !!top && low.length >= 4;
+      used = [...(top ? [top] : []), ...low.slice(0, 4)];
+      const nm = `${rankOne(r1)} of ${SUIT_NAME[bid.suit]}`;
+      text = !top ? `No ${nm} on the table.`
+        : ok ? `${rankOne(r1)} of ${SUIT_NAME[bid.suit]} with four lower ${SUIT_NAME[bid.suit]} under it.`
+          : `${nm} found, but only ${low.length} lower ${SUIT_NAME[bid.suit]} (needed 4).`;
       break;
     }
     case 9: case 10: {
@@ -180,9 +191,10 @@ export function allBids() {
       if (a !== b) out.push({ type: 7, rank1: a, rank2: b });
     });
     if (a >= 5) out.push({ type: 5, rank1: a });
+    if (a >= 6) S.forEach((s) => out.push({ type: 6, rank1: a, suit: s }));
     if (a >= 5 && a <= 13) S.forEach((s) => out.push({ type: 9, rank1: a, suit: s }));
   });
-  S.forEach((s) => out.push({ type: 6, suit: s }, { type: 10, suit: s }));
+  S.forEach((s) => out.push({ type: 10, suit: s }));
   ALL = out.map(normalizeBid).sort((x, y) => (isBidHigher(x, y) ? 1 : -1));
   return ALL;
 }
@@ -218,25 +230,114 @@ export function estP(hand, bid, poolSize, n = 150) {
   return ok / n;
 }
 
-export function botDecide(hand, cur, poolSize) {
-  if (cur) {
-    const p = estP(hand, cur, poolSize, 240);
-    if (p < 0.27 + Math.random() * 0.06) return { call: true };
+// ---------- Bot brain ----------
+// Which cards a claim is about: someone who bids it is more likely to hold some of them
+function relevant(bid) {
+  const r1 = bid.rank1, r2 = bid.rank2, s = bid.suit;
+  switch (bid.type) {
+    case 1: case 2: case 4: case 8: return (c) => c.r === r1;
+    case 3: case 7: return (c) => c.r === r1 || c.r === r2;
+    case 5: { const rs = straightRanks(r1); return (c) => rs.includes(c.r); }
+    case 6: return (c) => c.s === s && c.r <= r1;
+    case 9: { const rs = straightRanks(r1); return (c) => c.s === s && rs.includes(c.r); }
+    case 10: return (c) => c.s === s && c.r >= 10;
   }
-  const th = 0.32 + Math.random() * 0.22;
-  const cands = allBids().filter((b) => isBidHigher(b, cur));
-  let best = null, bestP = -1;
-  for (let i = 0; i < cands.length; i++) {
-    const p = estP(hand, cands[i], poolSize, 90);
-    if (p > bestP) { bestP = p; best = cands[i]; }
-    if (p >= th) {
-      // occasionally push a little harder than needed
-      if (Math.random() < 0.15 && cands[i + 1] && estP(hand, cands[i + 1], poolSize, 60) > th * 0.8) return { bid: cands[i + 1] };
-      return { bid: cands[i] };
+  return () => false;
+}
+// How much more likely a bid is when the bidder holds 0, 1, 2+ of its cards (bids are often bluffs)
+const READ = [1, 1.9, 2.6];
+
+// Deal the unseen cards to each opponent many times, weighting each deal by how well it explains
+// what those opponents have bid this round.
+export function sampleTables(hand, others, n = 360) {
+  const unk = FULL_DECK.filter((c) => !hand.some((h) => h.r === c.r && h.s === c.s));
+  const sizes = others.map((o) => o.n);
+  const need = Math.min(unk.length, sizes.reduce((a, x) => a + x, 0));
+  const tests = others.map((o) => (o.bids || []).map(relevant));
+  const out = [];
+  for (let t = 0; t < n; t++) {
+    for (let k = 0; k < need; k++) {
+      const j = k + Math.floor(Math.random() * (unk.length - k));
+      const tmp = unk[k]; unk[k] = unk[j]; unk[j] = tmp;
+    }
+    let w = 1, at = 0;
+    for (let i = 0; i < others.length; i++) {
+      const h = unk.slice(at, at + sizes[i]); at += sizes[i];
+      for (const f of tests[i]) {
+        let m = 0;
+        for (const c of h) if (f(c)) m++;
+        w *= READ[Math.min(m, 2)];
+      }
+    }
+    out.push({ st: stats(hand.concat(unk.slice(0, need))), w });
+  }
+  return out;
+}
+
+// Rank counts and per-suit rank bitmasks, so checking a bid against a table is a few integer ops
+function stats(pool) {
+  const rc = new Array(15).fill(0), m = { S: 0, H: 0, D: 0, C: 0 };
+  for (const c of pool) { rc[c.r]++; m[c.s] |= 1 << c.r; }
+  return { rc, m, n: pool.length };
+}
+const bits = (x) => { let k = 0; while (x) { x &= x - 1; k++; } return k; };
+const runMask = (rs) => rs.reduce((a, r) => a | (1 << r), 0);
+function holdsFast(st, bid) {
+  const { rc, m } = st, r1 = bid.rank1;
+  switch (bid.type) {
+    case 1: {
+      if (!rc[r1]) return false;
+      let low = 0;
+      for (let r = 2; r <= r1; r++) low += rc[r];
+      return low >= Math.min(5, st.n);
+    }
+    case 2: return rc[r1] >= 2;
+    case 3: return rc[r1] >= 2 && rc[bid.rank2] >= 2;
+    case 4: return rc[r1] >= 3;
+    case 5: return straightRanks(r1).every((r) => rc[r] > 0);
+    case 6: return !!(m[bid.suit] & (1 << r1)) && bits(m[bid.suit] & ((1 << r1) - 1)) >= 4;
+    case 7: return rc[r1] >= 3 && rc[bid.rank2] >= 2;
+    case 8: return rc[r1] >= 4;
+    case 9: case 10: {
+      const want = runMask(bid.type === 10 ? [14, 13, 12, 11, 10] : straightRanks(r1));
+      return (m[bid.suit] & want) === want;
     }
   }
-  if (cur) return { call: true };
-  return { bid: best || cands[0] };
+  return false;
+}
+export function tableP(tables, bid) {
+  let ok = 0, all = 0;
+  for (const t of tables) { all += t.w; if (holdsFast(t.st, bid)) ok += t.w; }
+  return all ? ok / all : 0;
+}
+
+// others: [{ n: cards held, bids: [their bids this round] }] for every other live player
+export function botDecide(hand, cur, poolSize, others) {
+  if (!others || !others.length) others = [{ n: Math.max(0, poolSize - hand.length), bids: [] }];
+  const T = sampleTables(hand, others);
+  const pCur = cur ? tableP(T, cur) : 1;
+  if (cur && pCur < 0.08) return { call: true };
+
+  const scored = allBids().filter((b) => isBidHigher(b, cur)).map((b) => ({ b, p: tableP(T, b) }));
+  if (!scored.length) return { call: true };
+  // the cheapest raise we believe in; now and then jump to a stronger claim we still believe in
+  const th = 0.5 + Math.random() * 0.15;
+  const good = scored.filter((x) => x.p >= th);
+  let pick = good[0] || null;
+  if (pick && good.length > 2 && Math.random() < 0.2) {
+    const hi = good.slice(Math.floor(good.length / 2));
+    pick = hi[Math.floor(Math.random() * hi.length)];
+  }
+  // nothing believable: make the least unlikely claim (a bluff)
+  if (!pick) pick = scored.reduce((m, x) => (x.p > m.p ? x : m), scored[0]);
+  if (!cur) return { bid: pick.b };
+
+  // calling loses if the hand is there; raising loses only if we get called and it isn't
+  const callChance = others.length > 1 ? 0.65 : 0.8;
+  const riskCall = pCur;
+  const riskRaise = (1 - pick.p) * callChance;
+  if (riskCall + (Math.random() - 0.5) * 0.08 < riskRaise) return { call: true };
+  return { bid: pick.b };
 }
 
 // ---------- Engine (runs on the host / solo device) ----------
@@ -435,7 +536,10 @@ export class Engine {
   botMove(id) {
     const G = this.G, p = G.players[G.turn];
     if (G.status !== 'PLAYING' || !p || p.id !== id) return;
-    const d = botDecide(p.hand, G.bid, this.poolSize());
+    const others = this.active().filter((o) => o !== p).map((o) => ({
+      n: o.hand.length, bids: G.log.filter((e) => e.pid === o.id && e.bid).map((e) => e.bid),
+    }));
+    const d = botDecide(p.hand, G.bid, this.poolSize(), others);
     if (d.call && G.bid) this.call(id);
     else if (!this.bid(id, d.bid || minRaise(G.bid))) this.call(id);
   }

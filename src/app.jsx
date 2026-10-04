@@ -139,7 +139,7 @@ function RulesSheet({ onClose }) {
       <div className="rules-body">
         <p>Everyone is dealt a few cards face down. Together, all the cards on the table form one shared pool that nobody can fully see.</p>
         <p>On your turn, either <strong>raise</strong>: claim a poker hand exists somewhere in that pool, or <strong>call liar</strong> on the last claim.</p>
-        <p>Every raise must beat the last one: a better hand type, or the same type with higher cards. Flushes of equal rank go by suit, clubs lowest and spades highest.</p>
+        <p>Every raise must beat the last one: a better hand type, or the same type with higher cards. A flush names its top card and suit (e.g. King-high flush in hearts): higher top card wins, and with the same top card it goes by suit, clubs lowest and spades highest.</p>
         <p>When someone calls liar, every card is turned over. If the hand is there, the caller was wrong and takes the penalty. If it isn't, the bidder was bluffing and takes it.</p>
         <p>The penalty is one extra card next round. Anyone holding more than {MAX_CARDS} cards is out. The last player at the table wins.</p>
         <p>Starting hands: 3 cards each with 2 players, 2 cards with 3 or 4 players, 1 card with 5 or 6.</p>
@@ -467,6 +467,10 @@ function BidSheet({ view, me, poolSize, settings, onClose, onPlace }) {
       const alt = RANKS_DESC.slice().reverse().find((r) => r < s.rank1 && ok(normalizeBid({ ...s, rank2: r })));
       if (alt) s = { ...s, rank2: alt };
     }
+    if ((s.type === 6 || s.type === 9) && 'rank1' in patch && !ok(normalizeBid(s))) {
+      const alt = ['C', 'D', 'H', 'S'].find((x) => ok(normalizeBid({ ...s, suit: x })));
+      if (alt) s = { ...s, suit: alt };
+    }
     setSel(s); sfx.play('tap');
   };
   const chipOk = (patch) => {
@@ -476,6 +480,7 @@ function BidSheet({ view, me, poolSize, settings, onClose, onPlace }) {
     // for two-part hands, a different second rank might still make it a raise
     if (s.type === 3 && 'rank1' in patch) return RANKS_DESC.some((r) => r < s.rank1 && ok(normalizeBid({ ...s, rank2: r })));
     if (s.type === 7 && 'rank1' in patch) return RANKS_DESC.some((r) => r !== s.rank1 && ok(normalizeBid({ ...s, rank2: r })));
+    if ((s.type === 6 || s.type === 9) && 'rank1' in patch) return ['C', 'D', 'H', 'S'].some((x) => ok(normalizeBid({ ...s, suit: x })));
     return false;
   };
 
@@ -516,7 +521,7 @@ function BidSheet({ view, me, poolSize, settings, onClose, onPlace }) {
     case 1: case 2: case 4: case 8: picks = rankRow('Rank', 'rank1', RANKS_DESC); break;
     case 3: picks = <>{rankRow('Higher pair', 'rank1', RANKS_DESC.slice(0, 12))}{rankRow('Lower pair', 'rank2', RANKS_DESC.slice(1), (r) => r >= sel.rank1)}</>; break;
     case 5: picks = rankRow('Top card', 'rank1', RANKS_DESC.slice(0, 10)); break;
-    case 6: picks = suitRow(); break;
+    case 6: picks = <>{rankRow('Top card', 'rank1', RANKS_DESC.slice(0, 9))}{suitRow()}</>; break;
     case 7: picks = <>{rankRow('Three of', 'rank1', RANKS_DESC)}{rankRow('Pair of', 'rank2', RANKS_DESC, (r) => r === sel.rank1)}</>; break;
     case 9: picks = <>{rankRow('Top card', 'rank1', RANKS_DESC.slice(1, 10))}{suitRow()}</>; break;
     case 10: picks = <>{suitRow()}<p className="royal-note">Ace, King, Queen, Jack and Ten of one suit. The highest claim there is.</p></>; break;
