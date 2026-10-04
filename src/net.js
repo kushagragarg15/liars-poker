@@ -1,4 +1,5 @@
 import { Engine, engineView, cardStr, normalizeBid } from './engine.js';
+import { peerRoom } from './peerroom.js';
 
 // ---------- crypto: each player's hand is encrypted for that player only ----------
 const b64 = (buf) => { let s = ''; new Uint8Array(buf).forEach((b) => { s += String.fromCharCode(b); }); return btoa(s); };
@@ -89,11 +90,15 @@ function decodeState(st, myId, myHand) {
   };
 }
 
+// Inside Claude use the artifact `room` capability; everywhere else fall back to PeerJS.
 export async function getRoom() {
   try {
-    if (!window.claude || typeof window.claude.use !== 'function') return null;
-    return await window.claude.use('room');
-  } catch (e) { return null; }
+    if (window.claude && typeof window.claude.use === 'function') {
+      const r = await window.claude.use('room');
+      if (r) return r;
+    }
+  } catch (e) {}
+  return typeof RTCPeerConnection === 'function' ? peerRoom : null;
 }
 
 export function makeCode() {
@@ -125,7 +130,7 @@ export class Session {
         return;
       }
       const room = await getRoom();
-      if (!room) throw new Error('Multiplayer needs this page open in Claude.');
+      if (!room) throw new Error('Multiplayer is not supported in this browser.');
       this.keys = await makeKeys();
       this.aes = new Map(); this.pkSeen = new Map(); this.lastQ = new Map(); this.encCache = new Map();
       this.kicked = new Set();
@@ -135,7 +140,7 @@ export class Session {
       this.pushState();
     } else {
       const room = await getRoom();
-      if (!room) throw new Error('Multiplayer needs this page open in Claude.');
+      if (!room) throw new Error('Multiplayer is not supported in this browser.');
       this.keys = await makeKeys();
       this.q = 0;
       this.r = await room.join(roomName(this.code));

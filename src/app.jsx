@@ -226,7 +226,7 @@ function Home({ roomOk, error, onSolo, onHost, onJoin, openRules, openSettings }
               <button className="btn ghost" disabled={!roomOk || code.length !== 4} onClick={join}>Join</button>
             </div>
           </div>
-          {roomOk === false && <p className="hint">Tables with friends open when this page runs inside Claude. Bots are always ready to play.</p>}
+          {roomOk === false && <p className="hint">This browser can't open tables with friends. Bots are always ready to play.</p>}
           {roomOk === null && <p className="hint">Checking for multiplayer…</p>}
         </section>
 
