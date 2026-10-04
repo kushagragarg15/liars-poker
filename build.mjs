@@ -12,7 +12,7 @@ const html = `<!DOCTYPE html>
 <title>Liar's Poker</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:opsz,wght@6..96,600;6..96,700;6..96,800&family=Figtree:wght@400;500;600;700;800&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:opsz,wght@6..96,600;6..96,700;6..96,800&family=Figtree:wght@400;500;600;700;800&family=JetBrains+Mono:wght@700;800&display=swap">
 <style>${css}</style>
 </head>
 <body>
