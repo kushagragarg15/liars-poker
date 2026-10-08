@@ -54,6 +54,7 @@ function encodeState(G, hands) {
     } : 0,
     rd: G.ready.map(idx),
     w: G.winnerId ? idx(G.winnerId) : -1,
+    rx: G.reacts.map((r) => [r.n, idx(r.pid), r.e]),
   };
 }
 
@@ -87,6 +88,7 @@ function decodeState(st, myId, myHand) {
     reveal,
     ready: (st.rd || []).map((i) => ids[i]),
     winnerId: st.w >= 0 ? ids[st.w] : null,
+    reacts: (st.rx || []).map((r) => ({ n: +r[0], pid: ids[r[1]], e: +r[2] })).filter((r) => r.pid),
   };
 }
 
@@ -132,7 +134,7 @@ export class Session {
       const room = await getRoom();
       if (!room) throw new Error('Multiplayer is not supported in this browser.');
       this.keys = await makeKeys();
-      this.aes = new Map(); this.pkSeen = new Map(); this.lastQ = new Map(); this.encCache = new Map();
+      this.aes = new Map(); this.pkSeen = new Map(); this.lastQ = new Map(); this.lastRq = new Map(); this.encCache = new Map();
       this.kicked = new Set();
       this.r = await room.join(roomName(this.code));
       this.unsub = this.r.onPeers((ch) => this.hostPeers(ch));
@@ -142,7 +144,7 @@ export class Session {
       const room = await getRoom();
       if (!room) throw new Error('Multiplayer is not supported in this browser.');
       this.keys = await makeKeys();
-      this.q = 0;
+      this.q = 0; this.rq = 0;
       this.r = await room.join(roomName(this.code));
       await this.r.presence({ role: 'player', name: this.name, pk: this.keys ? this.keys.pub : '' });
       this.unsub = this.r.onPeers((ch) => this.clientPeers(ch));
@@ -204,6 +206,11 @@ export class Session {
       if (act && typeof act.q === 'number' && act.q > (this.lastQ.get(id) || 0)) {
         this.lastQ.set(id, act.q);
         if (E.get(id)) this.applyAct(id, act);
+      }
+      const rx = pr.rx;
+      if (rx && typeof rx.q === 'number' && rx.q > (this.lastRq.get(id) || 0)) {
+        this.lastRq.set(id, rx.q);
+        E.react(id, +rx.e);
       }
     }
     for (const p of ch.left) {
@@ -267,6 +274,13 @@ export class Session {
   bid(b) {
     if (this.isHost) return this.engine.bid('me', b);
     this.sendAct('bid', [b.type, b.rank1 || 0, b.rank2 || 0, b.suit || '']);
+    return true;
+  }
+  react(e) {
+    if (this.isHost) return this.engine.react('me', e);
+    if (!this.r) return false;
+    this.rq++;
+    this.r.presence({ rx: { q: this.rq, e } }).catch(() => {});
     return true;
   }
   call() { if (this.isHost) this.engine.call('me'); else this.sendAct('call'); }

@@ -15,7 +15,7 @@ Output: `dist/index.html` (also copied to `dist/liars-poker.html`) (React, style
 
 ## Structure
 
-- `src/engine.js` – rules, bid ordering, hand checking, bot AI, game state machine
+- `src/engine.js` – rules, bid ordering, hand checking, bot AI, reactions, game state machine
 - `src/net.js` – solo / host / client sessions over a `room` (Claude's artifact `room` capability when available, otherwise PeerJS); hands are encrypted per player (ECDH + AES-GCM)
 - `src/peerroom.js` – PeerJS stand-in for the `room` capability: the first tab in a table claims its PeerJS id and relays presence to everyone else (WebRTC, free PeerJS cloud broker)
 - `src/sfx.js` – Web Audio synthesized sound effects
@@ -23,9 +23,16 @@ Output: `dist/index.html` (also copied to `dist/liars-poker.html`) (React, style
 - `src/app.jsx` – UI: home, lobby, table, bid sheet, reveal, game over
 - `src/styles.css` – theme tokens, responsive layouts, animations
 - `api/turn.js` – Vercel function that returns TURN relay credentials (Metered or Cloudflare) so players on different networks can connect
+- `tests/arena.mjs` – headless bot self-play for tuning the bot brain (`node tests/arena.mjs 1000 4 '{"read":[1,6,12]}' '{}'`)
 - `tests/` – Playwright scripts (`play.py` solo, `mp.py` multiplayer with `mock.js`, a fake `room` capability; `peer.py` a full two-browser game over PeerJS)
 
 ## Notes
+
+**High card** follows real poker: "Nine high" needs a Nine plus four lower cards of *different* ranks that don't form a straight or flush, so a pair can't stand in for two cards. The lowest possible claim is Seven high (7-5-4-3-2).
+
+**Bots** score every move (call, or any legal raise) by expected outcome: how likely the claim is given their cards and what everyone has bid, and how likely the next player is to call it given how believable it looks without seeing the bot's cards. Cheap one-step raises gain nothing, so they jump to claims their cards back up and call shaky ones. In 2,000-game self-play they beat the previous bots clearly (see `tests/arena.mjs`).
+
+**Reactions**: everyone, bots included, can send emoji reactions at any time, including during the reveal.
 
 Multiplayer works anywhere: inside Claude it uses the artifact `room` capability, elsewhere it falls back to PeerJS. Over PeerJS the host's tab is the table, so it must stay open; players on very strict networks may fail to connect.
 

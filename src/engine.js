@@ -44,7 +44,8 @@ export function validateBid(b) {
   const rk = (x) => Number.isInteger(x) && x >= 2 && x <= 14;
   const st = (x) => typeof x === 'string' && x in SUIT_ORDER;
   switch (b.type) {
-    case 1: case 2: case 4: case 8: return rk(b.rank1);
+    case 1: return rk(b.rank1) && b.rank1 >= HIGH_MIN;
+    case 2: case 4: case 8: return rk(b.rank1);
     case 3: return rk(b.rank1) && rk(b.rank2) && b.rank1 > b.rank2;
     case 7: return rk(b.rank1) && rk(b.rank2) && b.rank1 !== b.rank2;
     case 5: return rk(b.rank1) && b.rank1 >= 5;
@@ -83,37 +84,32 @@ export function bidText(b) {
 
 export const straightRanks = (hi) => [0, 1, 2, 3, 4].map((k) => (hi - k === 1 ? 14 : hi - k));
 
-// Fast boolean check used by bots / odds
-export function holds(pool, bid) {
-  const rc = new Array(15).fill(0);
-  const sc = { S: 0, H: 0, D: 0, C: 0 };
-  for (const c of pool) { rc[c.r]++; sc[c.s]++; }
-  switch (bid.type) {
-    case 1: {
-      if (!rc[bid.rank1]) return false;
-      let low = 0;
-      for (let r = 2; r <= bid.rank1; r++) low += rc[r];
-      return low >= Math.min(5, pool.length);
-    }
-    case 2: return rc[bid.rank1] >= 2;
-    case 3: return rc[bid.rank1] >= 2 && rc[bid.rank2] >= 2;
-    case 4: return rc[bid.rank1] >= 3;
-    case 5: return straightRanks(bid.rank1).every((r) => rc[r] > 0);
-    case 6: {
-      // the named card, plus four lower cards of the same suit
-      let top = false, low = 0;
-      for (const c of pool) if (c.s === bid.suit) { if (c.r === bid.rank1) top = true; else if (c.r < bid.rank1) low++; }
-      return top && low >= 4;
-    }
-    case 7: return rc[bid.rank1] >= 3 && rc[bid.rank2] >= 2;
-    case 8: return rc[bid.rank1] >= 4;
-    case 9: case 10: {
-      const rs = bid.type === 10 ? [14, 13, 12, 11, 10] : straightRanks(bid.rank1);
-      return rs.every((r) => pool.some((c) => c.r === r && c.s === bid.suit));
-    }
+// "X high" is a real poker high-card hand: X plus four lower cards, all of different ranks, that
+// don't make a straight or a flush. Below 7 that's impossible (6-5-4-3-2 is a straight).
+export const HIGH_MIN = 7;
+const SUIT_BIT = { C: 1, D: 2, H: 4, S: 8 };
+const isRun = (rs) => rs[0] - rs[4] === 4 || (rs[0] === 14 && rs[1] === 5 && rs[4] === 2);
+// rc: count per rank, sr: bitmask of suits present per rank, n: cards on the table
+function highRanks(rc, sr, n, x) {
+  if (x < HIGH_MIN || !rc[x]) return null;
+  const lower = [];
+  for (let r = x - 1; r >= 2; r--) if (rc[r]) lower.push(r);
+  const need = Math.min(4, n - 1);
+  if (lower.length < need) return null;
+  if (need < 4) return [x, ...lower.slice(0, need)];
+  const L = lower.length;
+  for (let a = 0; a < L; a++) for (let b = a + 1; b < L; b++) for (let c = b + 1; c < L; c++) for (let d = c + 1; d < L; d++) {
+    const rs = [x, lower[a], lower[b], lower[c], lower[d]];
+    if (isRun(rs)) continue;
+    const s0 = sr[x];
+    if (!(s0 & (s0 - 1)) && rs.every((r) => sr[r] === s0)) continue; // every card is the same single suit: a flush
+    return rs;
   }
-  return false;
+  return null;
 }
+
+// Boolean check used by bots and odds
+export const holds = (pool, bid) => holdsFast(stats(pool), bid);
 
 // Full check with an explanation and the cards that make (or partly make) the hand
 export function check(pool, bid) {
@@ -125,14 +121,25 @@ export function check(pool, bid) {
   const r1 = bid.rank1, r2 = bid.rank2;
   switch (bid.type) {
     case 1: {
-      const low = pool.filter((c) => c.r <= r1).length;
-      const need = Math.min(5, pool.length);
-      ok = cnt(r1) >= 1 && low >= need;
-      used = take(r1, 1);
-      text = !cnt(r1)
-        ? `No ${rankOne(r1)} anywhere on the table.`
-        : ok ? `${rankOne(r1)} found, with enough lower cards to build the hand around it.`
-          : `Only ${low} cards at ${rankOne(r1)} or below, so any five-card hand has something higher.`;
+      const st = stats(pool);
+      const rs = highRanks(st.rc, st.sr, pool.length, r1);
+      const need = Math.min(4, pool.length - 1);
+      let lowRanks = 0;
+      for (let r = r1 - 1; r >= 2; r--) if (cnt(r)) lowRanks++;
+      ok = !!rs;
+      if (rs) {
+        used = rs.map((r) => byRank[r][0]);
+        // if those picks happen to share a suit, swap one for another suit so it isn't a flush
+        if (used.length === 5 && used.every((c) => c.s === used[0].s)) {
+          const i = rs.findIndex((r) => byRank[r].some((c) => c.s !== used[0].s));
+          used[i] = byRank[rs[i]].find((c) => c.s !== used[0].s);
+        }
+      } else used = take(r1, 1);
+      text = r1 < HIGH_MIN ? `${rankOne(r1)} high can't exist: there aren't four lower ranks that avoid a straight.`
+        : !cnt(r1) ? `No ${rankOne(r1)} anywhere on the table.`
+          : ok ? `${rankOne(r1)} with ${need} lower cards of different ranks, no pair, straight or flush.`
+            : lowRanks < need ? `${rankOne(r1)} found, but only ${lowRanks} different lower ${lowRanks === 1 ? 'rank' : 'ranks'} (needed ${need}). Pairs don't count twice.`
+              : `${rankOne(r1)} found, but every five cards it could make form a straight or a flush.`;
       break;
     }
     case 2: case 4: case 8: {
@@ -185,7 +192,8 @@ export function allBids() {
   const out = [], R = [], S = Object.keys(SUIT_ORDER);
   for (let r = 2; r <= 14; r++) R.push(r);
   R.forEach((a) => {
-    out.push({ type: 1, rank1: a }, { type: 2, rank1: a }, { type: 4, rank1: a }, { type: 8, rank1: a });
+    if (a >= HIGH_MIN) out.push({ type: 1, rank1: a });
+    out.push({ type: 2, rank1: a }, { type: 4, rank1: a }, { type: 8, rank1: a });
     R.forEach((b) => {
       if (a > b) out.push({ type: 3, rank1: a, rank2: b });
       if (a !== b) out.push({ type: 7, rank1: a, rank2: b });
@@ -249,7 +257,7 @@ const READ = [1, 1.9, 2.6];
 
 // Deal the unseen cards to each opponent many times, weighting each deal by how well it explains
 // what those opponents have bid this round.
-export function sampleTables(hand, others, n = 360) {
+export function sampleTables(hand, others, n = 360, READ_W = READ) {
   const unk = FULL_DECK.filter((c) => !hand.some((h) => h.r === c.r && h.s === c.s));
   const sizes = others.map((o) => o.n);
   const need = Math.min(unk.length, sizes.reduce((a, x) => a + x, 0));
@@ -266,7 +274,7 @@ export function sampleTables(hand, others, n = 360) {
       for (const f of tests[i]) {
         let m = 0;
         for (const c of h) if (f(c)) m++;
-        w *= READ[Math.min(m, 2)];
+        w *= READ_W[Math.min(m, 2)];
       }
     }
     out.push({ st: stats(hand.concat(unk.slice(0, need))), w });
@@ -276,21 +284,16 @@ export function sampleTables(hand, others, n = 360) {
 
 // Rank counts and per-suit rank bitmasks, so checking a bid against a table is a few integer ops
 function stats(pool) {
-  const rc = new Array(15).fill(0), m = { S: 0, H: 0, D: 0, C: 0 };
-  for (const c of pool) { rc[c.r]++; m[c.s] |= 1 << c.r; }
-  return { rc, m, n: pool.length };
+  const rc = new Array(15).fill(0), sr = new Array(15).fill(0), m = { S: 0, H: 0, D: 0, C: 0 };
+  for (const c of pool) { rc[c.r]++; sr[c.r] |= SUIT_BIT[c.s]; m[c.s] |= 1 << c.r; }
+  return { rc, sr, m, n: pool.length };
 }
 const bits = (x) => { let k = 0; while (x) { x &= x - 1; k++; } return k; };
 const runMask = (rs) => rs.reduce((a, r) => a | (1 << r), 0);
 function holdsFast(st, bid) {
   const { rc, m } = st, r1 = bid.rank1;
   switch (bid.type) {
-    case 1: {
-      if (!rc[r1]) return false;
-      let low = 0;
-      for (let r = 2; r <= r1; r++) low += rc[r];
-      return low >= Math.min(5, st.n);
-    }
+    case 1: return !!highRanks(rc, st.sr, st.n, r1);
     case 2: return rc[r1] >= 2;
     case 3: return rc[r1] >= 2 && rc[bid.rank2] >= 2;
     case 4: return rc[r1] >= 3;
@@ -311,34 +314,51 @@ export function tableP(tables, bid) {
   return all ? ok / all : 0;
 }
 
-// others: [{ n: cards held, bids: [their bids this round] }] for every other live player
-export function botDecide(hand, cur, poolSize, others) {
+// Tunable knobs, fitted by self-play (tests/arena.mjs)
+export const BRAIN = { K: 14, delay: 0.22, temp: 0.015, read: [1, 4, 7], n: 400 };
+
+// others: [{ n: cards held, bids: [their bids this round] }] for every other live player, in turn
+// order starting with whoever acts next. myBids: what this bot has already claimed this round.
+//
+// Every option is scored by its expected result for the bot (+1 the other side takes the card,
+// -1 we take it):
+// - calling wins when the claim is false
+// - a raise is judged mostly by the next player: they call claims that look unlikely *to them*
+//   (they can't see our cards), so the best raises are ones we know are true but look shaky.
+//   A raise that won't be called just passes the turn on and keeps a little risk (`delay`), which
+//   is why creeping up one rank at a time is never worth it on its own.
+export function botDecide(hand, cur, poolSize, others, myBids = [], P = BRAIN) {
   if (!others || !others.length) others = [{ n: Math.max(0, poolSize - hand.length), bids: [] }];
-  const T = sampleTables(hand, others);
-  const pCur = cur ? tableP(T, cur) : 1;
-  if (cur && pCur < 0.08) return { call: true };
-
-  const scored = allBids().filter((b) => isBidHigher(b, cur)).map((b) => ({ b, p: tableP(T, b) }));
-  if (!scored.length) return { call: true };
-  // the cheapest raise we believe in; now and then jump to a stronger claim we still believe in
-  const th = 0.5 + Math.random() * 0.15;
-  const good = scored.filter((x) => x.p >= th);
-  let pick = good[0] || null;
-  if (pick && good.length > 2 && Math.random() < 0.2) {
-    const hi = good.slice(Math.floor(good.length / 2));
-    pick = hi[Math.floor(Math.random() * hi.length)];
+  const mine = sampleTables(hand, others, P.n, P.read);
+  const seen = sampleTables([], [{ n: hand.length, bids: myBids }, ...others], P.n, P.read);
+  const opts = [];
+  if (cur) opts.push({ call: true, eu: 1 - 2 * tableP(mine, cur) });
+  for (const b of allBids()) {
+    if (!isBidHigher(b, cur)) continue;
+    const pm = tableP(mine, b), pp = tableP(seen, b);
+    const c = 1 / (1 + Math.exp((pp - 0.5) * 2 * P.K));
+    opts.push({ bid: b, eu: c * (2 * pm - 1) - (1 - c) * P.delay });
   }
-  // nothing believable: make the least unlikely claim (a bluff)
-  if (!pick) pick = scored.reduce((m, x) => (x.p > m.p ? x : m), scored[0]);
-  if (!cur) return { bid: pick.b };
-
-  // calling loses if the hand is there; raising loses only if we get called and it isn't
-  const callChance = others.length > 1 ? 0.65 : 0.8;
-  const riskCall = pCur;
-  const riskRaise = (1 - pick.p) * callChance;
-  if (riskCall + (Math.random() - 0.5) * 0.08 < riskRaise) return { call: true };
-  return { bid: pick.b };
+  if (!opts.length) return { call: true };
+  // pick the best, with a little noise among near-equal options so bots aren't predictable
+  const best = Math.max(...opts.map((o) => o.eu));
+  const ws = opts.map((o) => Math.exp((o.eu - best) / P.temp));
+  let r = Math.random() * ws.reduce((a, w) => a + w, 0);
+  for (let i = 0; i < opts.length; i++) if ((r -= ws[i]) <= 0) return opts[i].call ? { call: true } : { bid: opts[i].bid };
+  return opts[0].call ? { call: true } : { bid: opts[0].bid };
 }
+
+// ---------- Reactions ----------
+export const REACTIONS = ['😂', '😮', '🤔', '😏', '😱', '👏', '🔥', '🤡', '😎', '🤦', '😤', '🙏'];
+const RX = (s) => REACTIONS.indexOf(s);
+const BOT_RX = {
+  lost: ['😱', '🤦', '😤', '🙏'].map(RX),
+  won: ['😎', '😏', '👏', '🔥'].map(RX),
+  watch: ['😂', '😮', '👏', '🤡'].map(RX),
+  bold: ['😮', '🤔', '😱', '🔥'].map(RX),
+};
+const pickOf = (a) => a[Math.floor(Math.random() * a.length)];
+const bidIndex = (b) => allBids().findIndex((x) => sameBid(x, b));
 
 // ---------- Engine (runs on the host / solo device) ----------
 const BOT_NAMES = ['Dutch', 'Mabel', 'Silas', 'Opal', 'Rook', 'Vera', 'Jasper', 'Ines', 'Monty', 'Faye'];
@@ -349,10 +369,33 @@ export class Engine {
     this.botTimer = null;
     this.readyTimer = null;
     this.botDelay = [1500, 2600];
+    this.fxTimers = new Set();
+    this.lastReact = new Map();
     this.G = {
       status: 'LOBBY', round: 0, players: [], starter: 0, turn: 0, bid: null,
       log: [], logN: 0, reveal: null, ready: [], winnerId: null, seq: 0, elimCount: 0,
+      reacts: [], reactN: 0,
     };
+  }
+
+  // anyone seated can react at any time; a short cooldown keeps it from being spammed
+  react(pid, e) {
+    const G = this.G, now = Date.now();
+    if (!this.get(pid) || !Number.isInteger(e) || e < 0 || e >= REACTIONS.length) return false;
+    if (now - (this.lastReact.get(pid) || 0) < 600) return false;
+    this.lastReact.set(pid, now);
+    G.reacts.push({ n: ++G.reactN, pid, e });
+    if (G.reacts.length > 6) G.reacts.shift();
+    this.changed();
+    return true;
+  }
+  later(ms, f) {
+    const t = setTimeout(() => { this.fxTimers.delete(t); f(); }, ms);
+    this.fxTimers.add(t);
+  }
+  botReact(p, set, chance, delay) {
+    if (!p || !p.bot || p.left || Math.random() >= chance) return;
+    this.later(delay + Math.random() * 1200, () => this.react(p.id, pickOf(set)));
   }
   changed() { this.G.seq++; this.onChange(this.G); }
   get(id) { return this.G.players.find((p) => p.id === id); }
@@ -428,6 +471,12 @@ export class Engine {
     if (G.status !== 'PLAYING' || !cur || cur.id !== pid || cur.elim) return false;
     const b = normalizeBid({ ...raw, bidderId: pid });
     if (!validateBid(b) || !isBidHigher(b, G.bid)) return false;
+    // a big jump or a monster hand gets a raised eyebrow from one of the bots
+    const jump = bidIndex(b) - bidIndex(minRaise(G.bid));
+    if (jump >= 30 || b.type >= 7) {
+      const watchers = this.active().filter((o) => o.bot && o.id !== pid);
+      if (watchers.length) this.botReact(pickOf(watchers), BOT_RX.bold, 0.45, 500);
+    }
     G.bid = b;
     G.log.push({ pid, bid: b }); G.logN++;
     if (G.log.length > 40) G.log.shift();
@@ -466,6 +515,14 @@ export class Engine {
     while (G.players[G.starter].elim && guard++ < n) G.starter = (G.starter + 1) % n;
     G.status = 'RESULT';
     G.ready = [];
+    // bots react once the verdict shows (cards flip one by one before that)
+    const verdictAt = 1450 + pool.length * 90;
+    const winnerId = loserId === pid ? bid.bidderId : pid;
+    G.players.forEach((p) => {
+      if (p.id === loserId) this.botReact(p, BOT_RX.lost, 0.7, verdictAt);
+      else if (p.id === winnerId) this.botReact(p, BOT_RX.won, 0.55, verdictAt);
+      else this.botReact(p, BOT_RX.watch, 0.2, verdictAt + 500);
+    });
     this.changed();
     this.checkReady();
     return true;
@@ -536,15 +593,20 @@ export class Engine {
   botMove(id) {
     const G = this.G, p = G.players[G.turn];
     if (G.status !== 'PLAYING' || !p || p.id !== id) return;
-    const others = this.active().filter((o) => o !== p).map((o) => ({
-      n: o.hand.length, bids: G.log.filter((e) => e.pid === o.id && e.bid).map((e) => e.bid),
-    }));
-    const d = botDecide(p.hand, G.bid, this.poolSize(), others);
+    const bidsOf = (id) => G.log.filter((e) => e.pid === id && e.bid).map((e) => e.bid);
+    // everyone else, in turn order starting with the next player
+    const n = G.players.length, others = [];
+    for (let k = 1; k < n; k++) {
+      const o = G.players[(G.turn + k) % n];
+      if (!o.elim) others.push({ n: o.hand.length, bids: bidsOf(o.id) });
+    }
+    const d = botDecide(p.hand, G.bid, this.poolSize(), others, bidsOf(p.id));
     if (d.call && G.bid) this.call(id);
     else if (!this.bid(id, d.bid || minRaise(G.bid))) this.call(id);
   }
   destroy() {
     clearTimeout(this.botTimer); clearTimeout(this.readyTimer);
+    this.fxTimers.forEach(clearTimeout); this.fxTimers.clear();
     this.onChange = () => {};
   }
 }
@@ -566,5 +628,6 @@ export function engineView(G, myId) {
     reveal: G.reveal,
     ready: [...G.ready],
     winnerId: G.winnerId,
+    reacts: G.reacts.map((r) => ({ ...r })),
   };
 }

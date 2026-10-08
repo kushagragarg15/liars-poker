@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import confettiLib from 'canvas-confetti';
 import {
   HAND_TYPES, SUIT_SYM, SUIT_NAME, isRed, rankLabel, parseCard, bidText, normalizeBid, validateBid,
-  isBidHigher, allBids, minRaise, bestInHand, estP, startingCards, MAX_CARDS,
+  isBidHigher, allBids, minRaise, bestInHand, estP, startingCards, MAX_CARDS, REACTIONS, HIGH_MIN,
 } from './engine.js';
 import { Session, getRoom, makeCode, cleanName } from './net.js';
 import { Sfx } from './sfx.js';
@@ -143,7 +143,7 @@ function RulesSheet({ onClose }) {
         <p>When someone calls liar, every card is turned over. If the hand is there, the caller was wrong and takes the penalty. If it isn't, the bidder was bluffing and takes it.</p>
         <p>The penalty is one extra card next round. Anyone holding more than {MAX_CARDS} cards is out. The last player at the table wins.</p>
         <p>Starting hands: 3 cards each with 2 players, 2 cards with 3 or 4 players, 1 card with 5 or 6.</p>
-        <p><strong>High card</strong> means you can build a five-card hand whose top card is that rank.</p>
+        <p><strong>High card</strong> works like real poker: the named card plus four lower cards, all different ranks, with no straight or flush. A pair doesn't count as two cards. So the lowest possible is Seven high (7-5-4-3-2).</p>
         <p className="muted">On a keyboard, press B to raise and L to call liar.</p>
       </div>
     </Sheet>
@@ -435,7 +435,7 @@ function BidSheet({ view, me, poolSize, settings, onClose, onPlace }) {
     if (!cur && myCards.length) {
       const best = bestInHand(myCards);
       const top = Math.max(...myCards.map((c) => c.r));
-      return { ...(best || { type: 1, rank1: top }) };
+      return { ...(best || { type: 1, rank1: Math.max(top, HIGH_MIN) }) };
     }
     return { ...(minRaise(cur) || { type: 10, suit: 'S' }) };
   });
@@ -518,7 +518,8 @@ function BidSheet({ view, me, poolSize, settings, onClose, onPlace }) {
 
   let picks = null;
   switch (sel.type) {
-    case 1: case 2: case 4: case 8: picks = rankRow('Rank', 'rank1', RANKS_DESC); break;
+    case 1: picks = rankRow('Top card', 'rank1', RANKS_DESC.filter((r) => r >= HIGH_MIN)); break;
+    case 2: case 4: case 8: picks = rankRow('Rank', 'rank1', RANKS_DESC); break;
     case 3: picks = <>{rankRow('Higher pair', 'rank1', RANKS_DESC.slice(0, 12))}{rankRow('Lower pair', 'rank2', RANKS_DESC.slice(1), (r) => r >= sel.rank1)}</>; break;
     case 5: picks = rankRow('Top card', 'rank1', RANKS_DESC.slice(0, 10)); break;
     case 6: picks = <>{rankRow('Top card', 'rank1', RANKS_DESC.slice(0, 9))}{suitRow()}</>; break;
@@ -577,8 +578,74 @@ function BidSheet({ view, me, poolSize, settings, onClose, onPlace }) {
   );
 }
 
+// ---------- reactions ----------
+// Floating emoji with the sender's name, above everything (including the reveal)
+function ReactionLayer({ reacts, nameOf, myId }) {
+  const seen = useRef(Math.max(0, ...(reacts || []).map((r) => r.n)));
+  const [items, setItems] = useState([]);
+  useEffect(() => {
+    const fresh = (reacts || []).filter((r) => r.n > seen.current);
+    if (!fresh.length) return;
+    seen.current = Math.max(...fresh.map((r) => r.n));
+    const add = fresh.map((r) => ({ key: r.n, e: REACTIONS[r.e], name: r.pid === myId ? 'You' : nameOf(r.pid), x: Math.round(Math.random() * 64) }));
+    setItems((it) => [...it.slice(-10), ...add]);
+    add.forEach((a) => setTimeout(() => setItems((it) => it.filter((x) => x.key !== a.key)), 2900));
+  }, [reacts]);
+  return (
+    <div className="react-layer" aria-live="polite">
+      {items.map((it) => (
+        <div className="react-float" key={it.key} style={{ right: 14 + it.x + 'px' }}>
+          <span className="react-emoji" role="img" aria-label={`${it.name} reacted ${it.e}`}>{it.e}</span>
+          <span className="react-name">{it.name}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function useReactCooldown(onReact) {
+  const [cool, setCool] = useState(false);
+  const send = (i) => {
+    if (cool) return;
+    onReact(i); sfx.play('tap');
+    setCool(true); setTimeout(() => setCool(false), 650);
+  };
+  return [cool, send];
+}
+
+function ReactStrip({ onReact, className = '' }) {
+  const [cool, send] = useReactCooldown(onReact);
+  return (
+    <div className={`react-strip ${className}`} role="group" aria-label="React">
+      {REACTIONS.map((e, i) => (
+        <button key={i} className="react-btn" disabled={cool} onClick={() => send(i)} aria-label={`React ${e}`}>{e}</button>
+      ))}
+    </div>
+  );
+}
+
+function ReactButton({ onReact }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const away = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const esc = (e) => { if (e.key === 'Escape') setOpen(false); };
+    addEventListener('pointerdown', away); addEventListener('keydown', esc);
+    return () => { removeEventListener('pointerdown', away); removeEventListener('keydown', esc); };
+  }, [open]);
+  return (
+    <div className="react-wrap" ref={ref}>
+      <button className={`icon-btn react-toggle ${open ? 'on' : ''}`} onClick={() => setOpen(!open)} aria-label="React with an emoji" aria-expanded={open}>
+        <span aria-hidden="true">😀</span>
+      </button>
+      {open && <div className="react-pop"><ReactStrip onReact={onReact} /></div>}
+    </div>
+  );
+}
+
 // ---------- reveal ----------
-function Reveal({ view, myId, nameOf, onReady }) {
+function Reveal({ view, myId, nameOf, onReady, onReact }) {
   const rv = view.reveal;
   const order = view.players.filter((p) => (rv.hands[p.id] || []).length);
   const total = order.reduce((a, p) => a + rv.hands[p.id].length, 0);
@@ -652,6 +719,8 @@ function Reveal({ view, myId, nameOf, onReady }) {
             </>
           )}
         </div>
+
+        {onReact && <ReactStrip onReact={onReact} className="in-reveal" />}
 
         <button className="btn primary wide" disabled={stage < 2 || !iNeed || iReady} onClick={() => { sfx.play('tap'); onReady(); }}>{label}</button>
       </div>
@@ -766,6 +835,7 @@ function GameScreen({ view, myId, isHost, mode, code, session, settings, layout,
         <div className={`status ${myTurn ? 'mine' : ''}`} aria-live="polite">
           {myTurn ? <ShinyText text={status} /> : <span>{status}{view.status === 'PLAYING' && me && !me.elim ? <span className="dots" /> : null}</span>}
         </div>
+        {me && <ReactButton onReact={(i) => session.react(i)} />}
         <div className="actions">
           <button className="btn primary act" disabled={!myTurn} onClick={openBid}>{view.bid ? 'Raise' : 'Open bidding'}</button>
           <button className={`btn liar act ${myTurn && view.bid ? 'armed' : ''}`} disabled={!myTurn || !view.bid} onClick={call}>Call liar</button>
@@ -773,7 +843,8 @@ function GameScreen({ view, myId, isHost, mode, code, session, settings, layout,
       </footer>
 
       {bidOpen && me && <BidSheet view={view} me={me} poolSize={pool} settings={settings} onClose={() => setBidOpen(false)} onPlace={place} />}
-      {view.status === 'RESULT' && view.reveal && <Reveal key={view.round} view={view} myId={myId} nameOf={nameOf} onReady={() => session.ready()} />}
+      {view.status === 'RESULT' && view.reveal && <Reveal key={view.round} view={view} myId={myId} nameOf={nameOf} onReady={() => session.ready()} onReact={me ? (i) => session.react(i) : null} />}
+      <ReactionLayer reacts={view.reacts} nameOf={nameOf} myId={myId} />
       {view.status === 'OVER' && <GameOver key={'go' + view.round} view={view} myId={myId} isHost={isHost} mode={mode} onAgain={() => session.again()} onLeave={onLeave} />}
     </div>
   );
